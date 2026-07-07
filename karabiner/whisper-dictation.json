@@ -1,0 +1,20 @@
+{
+  "title": "Whisper Dictation",
+  "rules": [
+    {
+      "description": "F5 / Dictation key → F18 (local Whisper dictation via Hammerspoon)",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "f5",
+            "modifiers": { "optional": ["any"] }
+          },
+          "to": [
+            { "key_code": "f18" }
+          ]
+        }
+      ]
+    }
+  ]
+}
