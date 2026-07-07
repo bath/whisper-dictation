@@ -1,66 +1,98 @@
 #!/usr/bin/env bash
-# Install whisper-dictation: check deps, fetch the model, wire up Hammerspoon + Karabiner.
-# Safe to re-run. Does NOT touch macOS permissions — see the README for those.
+# whisper-dictation installer.
+# Run it either way:
+#   curl -fsSL https://raw.githubusercontent.com/bath/whisper-dictation/main/install.sh | bash
+#   ./install.sh            (from a local clone)
+#
+# Does everything that CAN be automated: installs deps via Homebrew, downloads the
+# Whisper model, drops the Hammerspoon + Karabiner config, restarts Hammerspoon.
+# It CANNOT grant macOS permissions (Microphone/Accessibility/driver approval) —
+# those are user-gated by macOS and printed as manual steps at the end.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RAW="https://raw.githubusercontent.com/bath/whisper-dictation/main"
 MODEL_DIR="$HOME/.cache/whisper"
 MODEL="$MODEL_DIR/ggml-large-v3-turbo-q5_0.bin"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
 HS_DIR="$HOME/.hammerspoon"
 KB_DIR="$HOME/.config/karabiner/assets/complex_modifications"
 
-say() { printf '\033[1m==>\033[0m %s\n' "$1"; }
+bold() { printf '\033[1m%s\033[0m\n' "$1"; }
+say()  { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-say "Checking dependencies"
-missing=()
-have ffmpeg      || missing+=("ffmpeg (brew install ffmpeg)")
-have whisper-cli || missing+=("whisper-cli (brew install whisper-cpp)")
-[ -d /Applications/Hammerspoon.app ] || missing+=("Hammerspoon (brew install --cask hammerspoon)")
-if [ "${#missing[@]}" -gt 0 ]; then
-  printf 'Missing:\n'; printf '  - %s\n' "${missing[@]}"
-  echo "Install the above, then re-run ./install.sh"; exit 1
+# Use local files if run from a clone; otherwise download them.
+SELF="${BASH_SOURCE[0]:-}"
+SRC_DIR=""
+if [ -n "$SELF" ] && [ -f "$(dirname "$SELF")/whisper-dictation.lua" ]; then
+  SRC_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 fi
-if [ ! -d /Applications/Karabiner-Elements.app ]; then
-  echo "  (optional) Karabiner-Elements not found — needed for the F5 key remap."
-  echo "             brew install --cask karabiner-elements"
-fi
+fetch() { # <repo-relative-path> <dest>
+  if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/$1" ]; then cp "$SRC_DIR/$1" "$2"
+  else curl -fsSL "$RAW/$1" -o "$2"; fi
+}
 
-say "Whisper model"
-if [ -f "$MODEL" ]; then
-  echo "  already present: $MODEL"
-else
+[ "$(uname)" = "Darwin" ] || { echo "This is macOS-only."; exit 1; }
+
+say "Homebrew"
+if ! have brew; then
+  echo "Homebrew is required. Install it from https://brew.sh then re-run:"
+  echo '  curl -fsSL '"$RAW"'/install.sh | bash'
+  exit 1
+fi
+echo "  ok"
+
+say "Command-line tools (ffmpeg, whisper-cli)"
+have ffmpeg      || { echo "  installing ffmpeg";      brew install ffmpeg; }
+have whisper-cli || { echo "  installing whisper-cpp"; brew install whisper-cpp; }
+echo "  ok"
+
+say "Apps (Hammerspoon, Karabiner-Elements)"
+# Casks may prompt for your password (Karabiner installs a system driver).
+[ -d /Applications/Hammerspoon.app ]        || { echo "  installing hammerspoon";        brew install --cask hammerspoon; }
+[ -d /Applications/Karabiner-Elements.app ] || { echo "  installing karabiner-elements"; brew install --cask karabiner-elements; }
+echo "  ok"
+
+say "Whisper model (~550 MB)"
+if [ -f "$MODEL" ]; then echo "  already present"; else
   mkdir -p "$MODEL_DIR"
-  echo "  downloading (~550 MB) → $MODEL"
   curl -fL --progress-bar "$MODEL_URL" -o "$MODEL"
 fi
 
 say "Hammerspoon config"
 mkdir -p "$HS_DIR"
-cp "$REPO/whisper-dictation.lua" "$HS_DIR/whisper-dictation.lua"
-echo "  copied whisper-dictation.lua → $HS_DIR"
+fetch "whisper-dictation.lua" "$HS_DIR/whisper-dictation.lua"
 touch "$HS_DIR/init.lua"
 if ! grep -q 'require("whisper-dictation")' "$HS_DIR/init.lua"; then
   printf '\nrequire("whisper-dictation")\n' >> "$HS_DIR/init.lua"
-  echo "  added require(\"whisper-dictation\") to init.lua"
-else
-  echo "  init.lua already loads whisper-dictation"
 fi
+echo "  installed → $HS_DIR"
 
-say "Karabiner rule"
+say "Karabiner rule (F5 / dictation key → F18)"
 mkdir -p "$KB_DIR"
-cp "$REPO/karabiner/whisper-dictation.json" "$KB_DIR/whisper-dictation.json"
-echo "  copied rule → $KB_DIR"
+fetch "karabiner/whisper-dictation.json" "$KB_DIR/whisper-dictation.json"
+echo "  installed → $KB_DIR"
 
-cat <<'DONE'
+say "Restarting Hammerspoon"
+killall Hammerspoon >/dev/null 2>&1 || true
+sleep 1; open -a Hammerspoon
+open -a Karabiner-Elements >/dev/null 2>&1 || true
 
-==> Done. Remaining MANUAL steps (macOS gates these):
-  1. System Settings → Privacy & Security:
-       Microphone    → enable Hammerspoon
-       Accessibility → enable Hammerspoon
-     Then reload Hammerspoon (menu-bar icon → Reload Config). Try it with ⌥Space.
-  2. For the F5 key: launch Karabiner-Elements, approve its driver + Input Monitoring,
-     then Settings → Complex Modifications → Add rule → enable
-     "F5 / Dictation key → F18". Verify the key with Karabiner-EventViewer (see README).
-DONE
+echo
+bold "✅ Installed. Three things macOS makes you click yourself:"
+cat <<'STEPS'
+
+  1. Hammerspoon permissions — System Settings → Privacy & Security:
+       • Microphone    → enable Hammerspoon
+       • Accessibility → enable Hammerspoon
+
+  2. Karabiner-Elements (just opened):
+       • Approve its driver / system extension + grant Input Monitoring when asked
+       • Settings → Complex Modifications → Add rule → enable "F5 / Dictation key → F18"
+
+  3. (optional) System Settings → Keyboard → Dictation → Off
+       so Apple's cloud dictation never fires on that key.
+
+Then click into any text field, press F5, talk, press F5 again — your words appear.
+No F5 key / skipping Karabiner? ⌥Space works too (needs only step 1).
+STEPS
