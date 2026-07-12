@@ -6,6 +6,7 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/whisper-dictation-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/bin" "$TMP/home"
+mkdir -p "$TMP/applications"
 
 cat >"$TMP/bin/uname" <<'MOCK'
 #!/usr/bin/env bash
@@ -84,6 +85,7 @@ stream_installer() {
 output="$({ stream_installer; } | env \
   PATH="$TMP/bin:/usr/bin:/bin" \
   HOME="$TMP/home" \
+  APPLICATIONS_DIR="$TMP/applications" \
   BREW_LOG="$TMP/brew.log" \
   BREW_STDIN_LOG="$TMP/brew-stdin.log" \
   REPO_ROOT="$ROOT" \
@@ -118,5 +120,6 @@ for artifact in \
   fi
 done
 
-grep -Fq 'Installed. Three things macOS makes you click yourself:' <<<"$output"
+grep -Fq 'Files installed — setup is not complete until you click these three things:' <<<"$output"
+grep -Fq 'If F5 asks you to enable Apple' <<<"$output"
 echo "PASS: streamed installer survives child processes reading stdin"

@@ -16,7 +16,9 @@ One command (needs [Homebrew](https://brew.sh)):
 curl -fsSL https://raw.githubusercontent.com/bath/whisper-dictation/main/install.sh | bash
 ```
 
-It installs the tools, downloads the Whisper model (~550 MB), and wires everything up.
+It installs the tools, downloads the Whisper model (~550 MB), and copies the required configs.
+Karabiner does not allow imported rules to be enabled by the installer, so the clicks below are
+required before F5 will work.
 
 ## Then click 3 things (macOS won't let a script do these)
 
@@ -24,7 +26,8 @@ It installs the tools, downloads the Whisper model (~550 MB), and wires everythi
    and **Accessibility**.
 2. **Karabiner-Elements** (the installer opens it) — approve its driver / system extension +
    **Input Monitoring** when prompted, then **Settings → Complex Modifications → Add rule →**
-   enable **“F5 / Dictation key → F18”**.
+   enable **“F5 / Dictation key → F18”**. Merely installing or opening Karabiner does not
+   enable the rule.
 3. *(optional)* **System Settings → Keyboard → Dictation → Off**, so Apple's cloud dictation
    doesn't also fire on that key.
 
@@ -36,6 +39,16 @@ two later.
 > **No F5 key, or want to skip Karabiner?** `⌥Space` toggles dictation too — that path only
 > needs step 1 (Hammerspoon permissions). Karabiner exists solely to make the *bare* dictation
 > key work, since macOS sends it as a special event Hammerspoon can't catch on its own.
+
+## Troubleshooting
+
+- **F5 asks whether you want to enable Apple's Dictation:** the Karabiner rule is installed but
+  not enabled. In Karabiner-Elements, open **Complex Modifications → Add rule** and enable
+  **“F5 / Dictation key → F18”**.
+- **F5 does nothing:** try `⌥Space`. If that works, check the Karabiner rule and its Input
+  Monitoring permission. If it does not, enable Hammerspoon under both **Microphone** and
+  **Accessibility**, then reload its config from the menu-bar icon.
+- **The hotkey works:** the Hammerspoon menu icon changes from 🎙 to 🔴 while recording.
 
 ---
 

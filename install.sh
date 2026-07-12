@@ -16,6 +16,7 @@ MODEL="$MODEL_DIR/ggml-large-v3-turbo-q5_0.bin"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
 HS_DIR="$HOME/.hammerspoon"
 KB_DIR="$HOME/.config/karabiner/assets/complex_modifications"
+APPLICATIONS_DIR="${APPLICATIONS_DIR:-/Applications}"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
@@ -52,8 +53,8 @@ echo "  ok"
 
 say "Apps (Hammerspoon, Karabiner-Elements)"
 # Casks may prompt for your password (Karabiner installs a system driver).
-[ -d /Applications/Hammerspoon.app ]        || { echo "  installing hammerspoon";        brew_install --cask hammerspoon; }
-[ -d /Applications/Karabiner-Elements.app ] || { echo "  installing karabiner-elements"; brew_install --cask karabiner-elements; }
+[ -d "$APPLICATIONS_DIR/Hammerspoon.app" ]        || { echo "  installing hammerspoon";        brew_install --cask hammerspoon; }
+[ -d "$APPLICATIONS_DIR/Karabiner-Elements.app" ] || { echo "  installing karabiner-elements"; brew_install --cask karabiner-elements; }
 echo "  ok"
 
 say "Whisper model (~550 MB)"
@@ -74,7 +75,8 @@ echo "  installed → $HS_DIR"
 say "Karabiner rule (F5 / dictation key → F18)"
 mkdir -p "$KB_DIR"
 fetch "karabiner/whisper-dictation.json" "$KB_DIR/whisper-dictation.json"
-echo "  installed → $KB_DIR"
+echo "  rule file installed → $KB_DIR"
+echo "  IMPORTANT: Karabiner does not enable imported rules automatically."
 
 say "Restarting Hammerspoon"
 killall Hammerspoon >/dev/null 2>&1 || true
@@ -82,7 +84,7 @@ sleep 1; open -a Hammerspoon
 open -a Karabiner-Elements >/dev/null 2>&1 || true
 
 echo
-bold "✅ Installed. Three things macOS makes you click yourself:"
+bold "✅ Files installed — setup is not complete until you click these three things:"
 cat <<'STEPS'
 
   1. Hammerspoon permissions — System Settings → Privacy & Security:
@@ -92,10 +94,12 @@ cat <<'STEPS'
   2. Karabiner-Elements (just opened):
        • Approve its driver / system extension + grant Input Monitoring when asked
        • Settings → Complex Modifications → Add rule → enable "F5 / Dictation key → F18"
+       • If F5 asks you to enable Apple's Dictation, this rule is still not enabled
 
   3. (optional) System Settings → Keyboard → Dictation → Off
        so Apple's cloud dictation never fires on that key.
 
 Then click into any text field, press F5, talk, press F5 again — your words appear.
+Quick test: ⌥Space should toggle recording even before the Karabiner rule is enabled.
 No F5 key / skipping Karabiner? ⌥Space works too (needs only step 1).
 STEPS
