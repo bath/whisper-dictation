@@ -20,6 +20,9 @@ KB_DIR="$HOME/.config/karabiner/assets/complex_modifications"
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# When this installer is streamed via `curl | bash`, its source code is stdin.
+# Never let Homebrew or one of its subprocesses consume the rest of the script.
+brew_install() { brew install "$@" </dev/null; }
 
 # Use local files if run from a clone; otherwise download them.
 SELF="${BASH_SOURCE[0]:-}"
@@ -43,14 +46,14 @@ fi
 echo "  ok"
 
 say "Command-line tools (ffmpeg, whisper-cli)"
-have ffmpeg      || { echo "  installing ffmpeg";      brew install ffmpeg; }
-have whisper-cli || { echo "  installing whisper-cpp"; brew install whisper-cpp; }
+have ffmpeg      || { echo "  installing ffmpeg";      brew_install ffmpeg; }
+have whisper-cli || { echo "  installing whisper-cpp"; brew_install whisper-cpp; }
 echo "  ok"
 
 say "Apps (Hammerspoon, Karabiner-Elements)"
 # Casks may prompt for your password (Karabiner installs a system driver).
-[ -d /Applications/Hammerspoon.app ]        || { echo "  installing hammerspoon";        brew install --cask hammerspoon; }
-[ -d /Applications/Karabiner-Elements.app ] || { echo "  installing karabiner-elements"; brew install --cask karabiner-elements; }
+[ -d /Applications/Hammerspoon.app ]        || { echo "  installing hammerspoon";        brew_install --cask hammerspoon; }
+[ -d /Applications/Karabiner-Elements.app ] || { echo "  installing karabiner-elements"; brew_install --cask karabiner-elements; }
 echo "  ok"
 
 say "Whisper model (~550 MB)"
