@@ -20,7 +20,7 @@
 local FFMPEG  = "/opt/homebrew/bin/ffmpeg"
 local WHISPER = "/opt/homebrew/bin/whisper-cli"
 local MODEL   = os.getenv("HOME") .. "/.cache/whisper/ggml-large-v3-turbo-q5_0.bin"
-local MIC     = ":0"              -- avfoundation "video:audio"; 0 = built-in mic (see README)
+local MIC     = nil               -- nil = auto-detect the Mac's built-in mic; see README for overrides
 local LANG    = "en"              -- spoken language, or "auto"
 local WAV     = "/tmp/whisper-dictate.wav"
 local OUTPFX  = "/tmp/whisper-dictate"    -- whisper writes OUTPFX.txt
@@ -38,6 +38,30 @@ local recTask = nil
 local menu = hs.menubar.new()
 local function setIcon(s) if menu then menu:setTitle(s) end end
 setIcon("🎙")
+
+-- Continuity microphones can appear before the Mac's own microphone in
+-- AVFoundation's device list. Select the built-in input by name instead of
+-- assuming device 0 is local; otherwise starting dictation wakes an iPhone.
+local function resolveMic()
+  if MIC then return MIC end
+
+  local command = FFMPEG .. " -hide_banner -f avfoundation -list_devices true -i '' 2>&1"
+  local output = hs.execute(command) or ""
+  local readingAudioDevices = false
+
+  for line in output:gmatch("[^\r\n]+") do
+    if line:find("AVFoundation audio devices:", 1, true) then
+      readingAudioDevices = true
+    elseif readingAudioDevices then
+      local name = line:match("%[%d+%]%s+(.+)$")
+      if name and (name == "Built-in Microphone" or name:match("^MacBook .+ Microphone$")) then
+        return ":" .. name
+      end
+    end
+  end
+
+  return nil
+end
 
 -- Paste transcribed text into the focused field, then restore the clipboard.
 local function typeText(text)
@@ -66,6 +90,11 @@ end
 
 local function startRec()
   if recording then return end
+  local mic = resolveMic()
+  if not mic then
+    hs.alert.show("no built-in Mac microphone found — set MIC in whisper-dictation.lua")
+    return
+  end
   recording = true
   setIcon("🔴")
   os.remove(WAV); os.remove(OUTPFX .. ".txt")
@@ -81,7 +110,7 @@ local function startRec()
     end
     transcribe()  -- normal stop: the WAV is finalized, go transcribe it
   end, {
-    "-nostdin", "-y", "-f", "avfoundation", "-i", MIC,
+    "-nostdin", "-y", "-f", "avfoundation", "-i", mic,
     "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", WAV,
   })
   recTask:start()

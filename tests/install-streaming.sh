@@ -122,4 +122,9 @@ done
 
 grep -Fq 'Files installed — setup is not complete until you click these three things:' <<<"$output"
 grep -Fq 'If F5 asks you to enable Apple' <<<"$output"
+grep -Fq 'local MIC     = nil' "$TMP/home/.hammerspoon/whisper-dictation.lua"
+if grep -Fq 'local MIC     = ":0"' "$TMP/home/.hammerspoon/whisper-dictation.lua"; then
+  echo "FAIL: installed config still assumes AVFoundation device 0 is the built-in mic" >&2
+  exit 1
+fi
 echo "PASS: streamed installer survives child processes reading stdin"

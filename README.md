@@ -75,7 +75,7 @@ Hammerspoon (menu-bar 🎙 → *Reload Config*):
 | setting   | default                                          | notes |
 |-----------|--------------------------------------------------|-------|
 | `MODEL`   | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin`  | any ggml model; smaller = faster, less accurate |
-| `MIC`     | `":0"`                                           | avfoundation device index — list with `ffmpeg -f avfoundation -list_devices true -i ""` |
+| `MIC`     | `nil`                                            | auto-detects the Mac's built-in mic; set an avfoundation name such as `":Studio Display Microphone"` to override |
 | `LANG`    | `"en"`                                           | or `"auto"` |
 | `HOTKEYS` | `{{}, "f18"}`, `{{"alt"}, "space"}`              | add/replace toggle hotkeys |
 
@@ -100,6 +100,8 @@ rm ~/.config/karabiner/assets/complex_modifications/whisper-dictation.json
 
 - **Batch, not live** — text appears after you stop, not word-by-word. The tradeoff for a real
   local model.
+- The built-in microphone is selected by name so an iPhone Continuity microphone cannot take
+  over merely because it appears first in AVFoundation's device list.
 - Paste uses Cmd+V and restores your prior clipboard; a few secure fields block programmatic paste.
 - Paths assume Apple-Silicon Homebrew (`/opt/homebrew`); adjust for Intel (`/usr/local`).
 
