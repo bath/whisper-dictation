@@ -1,11 +1,11 @@
-import AVFoundation
 import AudioToolbox
+import AudioUnit
 import CoreAudio
+import Darwin
 import Foundation
 
 private struct Configuration {
     var deviceName: String?
-    var preRollMs = 250
 
     init(arguments: [String]) {
         var index = 0
@@ -13,9 +13,6 @@ private struct Configuration {
             switch arguments[index] {
             case "--device" where index + 1 < arguments.count:
                 deviceName = arguments[index + 1]
-                index += 2
-            case "--pre-roll-ms" where index + 1 < arguments.count:
-                preRollMs = Int(arguments[index + 1]) ?? preRollMs
                 index += 2
             default:
                 index += 1
@@ -120,6 +117,20 @@ private func selectInputDevice(requestedName: String?) throws -> AudioDevice {
     return devices[0]
 }
 
+private func deviceIsRunning(_ device: AudioDevice) -> Bool {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var running: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(device.id, &address, 0, nil, &size, &running) == noErr else {
+        return false
+    }
+    return running != 0
+}
+
 private func monotonicNs() -> UInt64 {
     DispatchTime.now().uptimeNanoseconds
 }
@@ -171,26 +182,68 @@ private func writeWav(samples: [Int16], sampleRate: Int, to path: String) throws
     try wav.write(to: URL(fileURLWithPath: path), options: .atomic)
 }
 
-private final class WarmRecorder: @unchecked Sendable {
-    private let engine = AVAudioEngine()
-    private let lock = NSLock()
-    private let firstBuffer = DispatchSemaphore(value: 0)
-    private let preRollMs: Int
+private let recorderInputCallback: AURenderCallback = { refCon, flags, timestamp, _, frames, _ in
+    let recorder = Unmanaged<ColdRecorder>.fromOpaque(refCon).takeUnretainedValue()
+    return recorder.receive(flags: flags, timestamp: timestamp, frames: frames)
+}
 
-    private var sampleRate = 0
-    private var ring: [Int16] = []
-    private var ringCount = 0
-    private var ringWriteIndex = 0
+private final class ColdRecorder: @unchecked Sendable {
+    private let device: AudioDevice
+    private let audioUnit: AudioUnit
+    private let sampleRate: Int
+    private let maximumFrames: UInt32
+    private let renderStorage: UnsafeMutableRawPointer
+    private let renderBuffers: UnsafeMutableAudioBufferListPointer
+    private let lock = NSLock()
+
+    private var firstBufferWaiter: DispatchSemaphore?
     private var recording = false
+    private var deviceWasRunningBeforeCapture = false
     private var recorded: [Int16] = []
     private var outputPath = "/tmp/whisper-dictate.wav"
-    private var hasSeenFirstBuffer = false
 
     init(configuration: Configuration) throws {
-        preRollMs = max(0, configuration.preRollMs)
-        let device = try selectInputDevice(requestedName: configuration.deviceName)
-        let input = engine.inputNode
-        guard let audioUnit = input.audioUnit else { throw RecorderError.noInputDevice }
+        device = try selectInputDevice(requestedName: configuration.deviceName)
+
+        var description = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        guard let component = AudioComponentFindNext(nil, &description) else {
+            throw RecorderError.noInputDevice
+        }
+        var instance: AudioComponentInstance?
+        try check(AudioComponentInstanceNew(component, &instance), "create HAL input unit")
+        guard let instance else { throw RecorderError.noInputDevice }
+        audioUnit = instance
+
+        var enabled: UInt32 = 1
+        try check(
+            AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_EnableIO,
+                kAudioUnitScope_Input,
+                1,
+                &enabled,
+                UInt32(MemoryLayout<UInt32>.size)
+            ),
+            "enable HAL input"
+        )
+        var disabled: UInt32 = 0
+        try check(
+            AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_EnableIO,
+                kAudioUnitScope_Output,
+                0,
+                &disabled,
+                UInt32(MemoryLayout<UInt32>.size)
+            ),
+            "disable HAL output"
+        )
         var deviceID = device.id
         try check(
             AudioUnitSetProperty(
@@ -204,65 +257,157 @@ private final class WarmRecorder: @unchecked Sendable {
             "select input device"
         )
 
-        let format = input.outputFormat(forBus: 0)
-        sampleRate = Int(format.sampleRate)
-        ring = [Int16](repeating: 0, count: max(1, sampleRate * preRollMs / 1000))
+        var deviceFormat = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        try check(
+            AudioUnitGetProperty(
+                audioUnit,
+                kAudioUnitProperty_StreamFormat,
+                kAudioUnitScope_Input,
+                1,
+                &deviceFormat,
+                &formatSize
+            ),
+            "read input format"
+        )
+        var clientFormat = AudioStreamBasicDescription(
+            mSampleRate: deviceFormat.mSampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        try check(
+            AudioUnitSetProperty(
+                audioUnit,
+                kAudioUnitProperty_StreamFormat,
+                kAudioUnitScope_Output,
+                1,
+                &clientFormat,
+                UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            ),
+            "set mono PCM input format"
+        )
+        sampleRate = Int(clientFormat.mSampleRate)
 
-        let bootStarted = monotonicNs()
-        input.installTap(onBus: 0, bufferSize: 256, format: format) { [weak self] buffer, _ in
-            self?.accept(buffer)
-        }
-        engine.prepare()
-        try engine.start()
-        guard firstBuffer.wait(timeout: .now() + 3) == .success else {
-            throw RecorderError.firstBufferTimeout
-        }
+        var sliceFrames: UInt32 = 0
+        var sliceSize = UInt32(MemoryLayout<UInt32>.size)
+        try check(
+            AudioUnitGetProperty(
+                audioUnit,
+                kAudioUnitProperty_MaximumFramesPerSlice,
+                kAudioUnitScope_Global,
+                0,
+                &sliceFrames,
+                &sliceSize
+            ),
+            "read maximum input slice"
+        )
+        maximumFrames = max(4096, sliceFrames)
+        renderStorage = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(maximumFrames) * MemoryLayout<Int16>.size,
+            alignment: MemoryLayout<Int16>.alignment
+        )
+        renderBuffers = AudioBufferList.allocate(maximumBuffers: 1)
+        renderBuffers[0] = AudioBuffer(
+            mNumberChannels: 1,
+            mDataByteSize: maximumFrames * UInt32(MemoryLayout<Int16>.size),
+            mData: renderStorage
+        )
+
+        var callback = AURenderCallbackStruct(
+            inputProc: recorderInputCallback,
+            inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
+        )
+        try check(
+            AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_SetInputCallback,
+                kAudioUnitScope_Global,
+                0,
+                &callback,
+                UInt32(MemoryLayout<AURenderCallbackStruct>.size)
+            ),
+            "set input callback"
+        )
+        try check(AudioUnitInitialize(audioUnit), "initialize HAL input")
 
         emit("ready", [
-            "boot_to_first_buffer_ms": Double(monotonicNs() - bootStarted) / 1_000_000,
+            "backend": "AUHAL",
             "device": device.name,
-            "pre_roll_ms": preRollMs,
+            "microphone_active": deviceIsRunning(device),
             "sample_rate": sampleRate,
         ])
     }
 
-    private func accept(_ buffer: AVAudioPCMBuffer) {
-        guard let channel = buffer.floatChannelData?[0] else { return }
-        let incoming = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+    func receive(
+        flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+        timestamp: UnsafePointer<AudioTimeStamp>,
+        frames: UInt32
+    ) -> OSStatus {
+        guard frames <= maximumFrames else { return kAudio_ParamError }
+        renderBuffers[0].mDataByteSize = frames * UInt32(MemoryLayout<Int16>.size)
+        let status = AudioUnitRender(
+            audioUnit,
+            flags,
+            timestamp,
+            1,
+            frames,
+            renderBuffers.unsafeMutablePointer
+        )
+        guard status == noErr else { return status }
 
+        let samples = UnsafeBufferPointer(
+            start: renderStorage.assumingMemoryBound(to: Int16.self),
+            count: Int(frames)
+        )
         lock.lock()
-        for sample in incoming {
-            let pcmSample = Int16(max(-1, min(1, sample)) * Float(Int16.max))
-            ring[ringWriteIndex] = pcmSample
-            ringWriteIndex = (ringWriteIndex + 1) % ring.count
-            ringCount = min(ring.count, ringCount + 1)
-            if recording { recorded.append(pcmSample) }
-        }
-        if !hasSeenFirstBuffer {
-            hasSeenFirstBuffer = true
-            firstBuffer.signal()
-        }
+        if recording { recorded.append(contentsOf: samples) }
+        let waiter = firstBufferWaiter
+        firstBufferWaiter = nil
         lock.unlock()
+        waiter?.signal()
+        return noErr
     }
 
-    private func ringSnapshot() -> [Int16] {
-        if ringCount < ring.count {
-            return Array(ring[0..<ringCount])
+    func start(path: String?) throws {
+        guard !recording else {
+            emit("error", ["message": "recorder is already active"])
+            return
         }
-        return Array(ring[ringWriteIndex..<ring.count]) + Array(ring[0..<ringWriteIndex])
-    }
-
-    func start(path: String?) {
         let received = monotonicNs()
+        deviceWasRunningBeforeCapture = deviceIsRunning(device)
         lock.lock()
         if let path { outputPath = path }
-        recorded = ringSnapshot()
-        let buffered = recorded.count
+        recorded = []
+        recorded.reserveCapacity(sampleRate * 60)
         recording = true
+        let firstBuffer = DispatchSemaphore(value: 0)
+        firstBufferWaiter = firstBuffer
         lock.unlock()
+
+        do {
+            try check(AudioOutputUnitStart(audioUnit), "start HAL input")
+            guard firstBuffer.wait(timeout: .now() + 3) == .success else {
+                throw RecorderError.firstBufferTimeout
+            }
+        } catch {
+            AudioOutputUnitStop(audioUnit)
+            lock.lock()
+            recording = false
+            firstBufferWaiter = nil
+            lock.unlock()
+            throw error
+        }
+
         emit("started", [
-            "command_to_armed_ms": Double(monotonicNs() - received) / 1_000_000,
-            "pre_roll_samples": buffered,
+            "command_to_first_buffer_ms": Double(monotonicNs() - received) / 1_000_000,
+            "microphone_active": deviceIsRunning(device),
+            "sample_rate": sampleRate,
         ])
     }
 
@@ -270,6 +415,18 @@ private final class WarmRecorder: @unchecked Sendable {
         let received = monotonicNs()
         lock.lock()
         recording = false
+        lock.unlock()
+
+        let releaseStarted = monotonicNs()
+        try check(AudioOutputUnitStop(audioUnit), "stop HAL input")
+        if !deviceWasRunningBeforeCapture {
+            let releaseDeadline = releaseStarted + 250_000_000
+            while deviceIsRunning(device) && monotonicNs() < releaseDeadline {
+                usleep(1_000)
+            }
+        }
+
+        lock.lock()
         let captured = recorded
         let path = outputPath
         lock.unlock()
@@ -278,6 +435,8 @@ private final class WarmRecorder: @unchecked Sendable {
         try writeWav(samples: captured, sampleRate: sampleRate, to: path)
         emit("stopped", [
             "command_to_wav_ms": Double(monotonicNs() - received) / 1_000_000,
+            "microphone_active": deviceIsRunning(device),
+            "microphone_release_ms": Double(wavStarted - releaseStarted) / 1_000_000,
             "path": path,
             "samples": captured.count,
             "wav_write_ms": Double(monotonicNs() - wavStarted) / 1_000_000,
@@ -286,25 +445,30 @@ private final class WarmRecorder: @unchecked Sendable {
 
     func state() {
         lock.lock()
-        let current = recording ? "recording" : "warm"
-        let buffered = ringCount
+        let current = recording ? "recording" : "idle"
         lock.unlock()
-        emit("state", ["state": current, "ring_samples": buffered])
+        emit("state", [
+            "state": current,
+            "microphone_active": deviceIsRunning(device),
+        ])
     }
 
     func shutdown() {
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
+        AudioOutputUnitStop(audioUnit)
+        AudioUnitUninitialize(audioUnit)
+        AudioComponentInstanceDispose(audioUnit)
+        renderBuffers.unsafeMutablePointer.deallocate()
+        renderStorage.deallocate()
     }
 }
 
 do {
     let configuration = Configuration(arguments: Array(CommandLine.arguments.dropFirst()))
-    let recorder = try WarmRecorder(configuration: configuration)
+    let recorder = try ColdRecorder(configuration: configuration)
     while let line = readLine() {
         let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
         switch parts.first?.uppercased() ?? "" {
-        case "START": recorder.start(path: parts.count == 2 ? parts[1] : nil)
+        case "START": try recorder.start(path: parts.count == 2 ? parts[1] : nil)
         case "STOP": try recorder.stop()
         case "STATE": recorder.state()
         case "QUIT":

@@ -75,8 +75,8 @@ fetch "whisper-dictation.lua" "$HS_DIR/whisper-dictation.lua"
 fetch "recorder/WhisperRecorder.swift" "$RECORDER_SRC"
 mkdir -p "$RECORDER_DIR"
 xcrun swiftc -O \
-  -framework AVFoundation \
   -framework AudioToolbox \
+  -framework AudioUnit \
   -framework CoreAudio \
   "$RECORDER_SRC" -o "$RECORDER" </dev/null
 touch "$HS_DIR/init.lua"

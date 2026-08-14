@@ -1,8 +1,8 @@
 -- whisper-dictation.lua — private, low-latency local dictation for macOS.
 --
--- A persistent native recorder keeps a 250 ms memory-only pre-roll, and a
--- local whisper-server keeps the Whisper model loaded. Press a hotkey to start,
--- press again to stop, and the transcript is pasted into the focused app.
+-- A persistent native helper prepares a stopped Core Audio HAL input unit, and
+-- a local whisper-server keeps the Whisper model loaded. The microphone remains
+-- inactive until the start hotkey, then releases again before transcription.
 
 -- ---- config -----------------------------------------------------------------
 local HOME           = os.getenv("HOME")
@@ -12,7 +12,6 @@ local CURL           = "/usr/bin/curl"
 local MODEL          = HOME .. "/.cache/whisper/ggml-large-v3-turbo-q5_0.bin"
 local MIC            = nil -- nil = built-in Mac mic; or an exact name such as ":Studio Display Microphone"
 local LANG           = "en"
-local PRE_ROLL_MS    = 250
 local WAV            = "/tmp/whisper-dictate.wav"
 local SERVER_HOST    = "127.0.0.1"
 local SERVER_PORT    = 8178
@@ -38,6 +37,7 @@ local shuttingDown = false
 local stopRequestedNs = nil
 local transcriptionStartedNs = nil
 local lastMetrics = {}
+local microphoneActive = false
 
 local menu = hs.menubar.new()
 local function setIcon(icon) if menu then menu:setTitle(icon) end end
@@ -46,7 +46,7 @@ setIcon("⏳")
 local function statusText()
   if phase == "warming" then
     local waiting = {}
-    if not recorderReady then table.insert(waiting, "microphone") end
+    if not recorderReady then table.insert(waiting, "recorder") end
     if not serverReady then table.insert(waiting, "Whisper") end
     return "Warming " .. table.concat(waiting, " + ")
   end
@@ -119,19 +119,23 @@ local function handleRecorderEvent(event)
   if event.event == "ready" then
     recorderReady = true
     recorderRetries = 0
-    lastMetrics.recorder_boot_ms = event.boot_to_first_buffer_ms
+    microphoneActive = event.microphone_active == true
+    lastMetrics.recorder_backend = event.backend
     lastMetrics.sample_rate = event.sample_rate
     refreshReadyState(true)
   elseif event.event == "started" then
-    lastMetrics.capture_arm_ms = event.command_to_armed_ms
-    lastMetrics.pre_roll_samples = event.pre_roll_samples
+    microphoneActive = event.microphone_active == true
+    lastMetrics.capture_first_buffer_ms = event.command_to_first_buffer_ms
   elseif event.event == "stopped" then
+    microphoneActive = event.microphone_active == true
     lastMetrics.wav_finalize_ms = event.command_to_wav_ms
     lastMetrics.wav_write_ms = event.wav_write_ms
+    lastMetrics.microphone_release_ms = event.microphone_release_ms
     lastMetrics.samples = event.samples
     transcribe(event.path or WAV)
   elseif event.event == "error" then
     recorderReady = false
+    microphoneActive = false
     phase = "warming"
     setIcon("⏳")
     print("Recorder error: " .. tostring(event.message or "unknown error"))
@@ -154,7 +158,7 @@ end
 
 local function startRecorder()
   recorderOutput = ""
-  local arguments = { "--pre-roll-ms", tostring(PRE_ROLL_MS) }
+  local arguments = {}
   if MIC then
     table.insert(arguments, "--device")
     table.insert(arguments, MIC:gsub("^:", ""))
@@ -304,6 +308,7 @@ return {
       recorder_ready = recorderReady,
       server_ready = serverReady,
       owns_server = ownsServer,
+      microphone_active = microphoneActive,
       last_metrics = lastMetrics,
     }
   end,

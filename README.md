@@ -16,7 +16,7 @@ One command (needs [Homebrew](https://brew.sh)):
 curl -fsSL https://raw.githubusercontent.com/bath/whisper-dictation/main/install.sh | bash
 ```
 
-It installs the tools, downloads the Whisper model (~550 MB), builds the native warm recorder,
+It installs the tools, downloads the Whisper model (~550 MB), builds the native recorder helper,
 and copies the required configs.
 Karabiner does not allow imported rules to be enabled by the installer, so the clicks below are
 required before F5 will work.
@@ -49,6 +49,8 @@ F5** → talk → **press F5 again**. Text appears shortly after you stop.
 - **F5 does nothing:** try `⌥Space`. If that works, check the Karabiner rule and its Input
   Monitoring permission. If it does not, enable Hammerspoon under both **Microphone** and
   **Accessibility**, then reload its config from the menu-bar icon.
+- **The first F5 press shows a Microphone prompt:** approve it, wait for 🎙, then press F5
+  again. macOS may defer this prompt until the helper first starts the input hardware.
 - **The hotkey works:** the Hammerspoon menu icon changes from 🎙 to 🔴 while recording.
 - **The menu stays at ⏳:** the native recorder or persistent Whisper server failed to warm.
   Open the Hammerspoon Console for the error, then reload its config.
@@ -59,15 +61,14 @@ F5** → talk → **press F5 again**. Text appears shortly after you stop.
 
 ```
 F5 / dictation key ──(Karabiner)──▶ F18 ──(Hammerspoon)──▶ toggle
-   load:   native recorder opens the mic + whisper-server loads the model once
-   start:  recorder keeps 250 ms of pre-roll and begins the in-memory take immediately
-   stop:   recorder writes a temp .wav → warm Whisper server → paste (clipboard restored)
+   load:   native helper prepares stopped HAL input + whisper-server loads the model once
+   start:  helper activates the microphone and captures the first hardware buffer
+   stop:   helper releases the mic + writes a temp .wav → warm Whisper server → paste
 ```
 
-The microphone stays open while Hammerspoon is running, so macOS shows its orange microphone
-indicator. Outside an active dictation, only a rolling 250 ms buffer exists in memory and is
-continually discarded. A temp WAV is written only after you press F5 to record. Nothing is
-uploaded.
+The microphone is inactive before F5 and is released again as soon as you stop recording. The
+helper process and Whisper model stay loaded, but no audio is captured outside an active take.
+A temp WAV is written after you stop. Nothing is uploaded.
 
 ## Requirements
 
@@ -85,7 +86,6 @@ Hammerspoon (menu-bar 🎙 → *Reload Config*):
 | `MODEL`   | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin`  | any ggml model; smaller = faster, less accurate |
 | `MIC`     | `nil`                                            | uses the Mac's built-in mic; set an exact name such as `":Studio Display Microphone"` to override |
 | `LANG`    | `"en"`                                           | or `"auto"` |
-| `PRE_ROLL_MS` | `250`                                        | memory-only audio retained before F5 so the first word is never clipped |
 | `HOTKEYS` | `{{}, "f18"}`, `{{"alt"}, "space"}`              | add/replace toggle hotkeys |
 
 ## Manual install (no curl)
@@ -110,7 +110,12 @@ rm ~/.config/karabiner/assets/complex_modifications/whisper-dictation.json
 ## Notes / limitations
 
 - **Batch, not live** — text appears after you stop, not word-by-word.
-- The warm recorder deliberately keeps the microphone active for near-zero capture latency.
+- The helper keeps its HAL input unit initialized but stopped. On the tested M1 Pro, first-buffer
+  activation measured 64 ms median / 71 ms p95; hardware and audio-device latency vary, so
+  sub-100 ms is not guaranteed on every Mac or external microphone.
+- A completely inactive microphone cannot provide pre-roll. Audio spoken during the short
+  hardware-activation window after F5 cannot be recovered; in normal use, the measured window
+  was shorter than the time it takes to move from pressing the key to speaking.
 - The built-in microphone is selected by name so an iPhone Continuity microphone cannot take
   over merely because it appears first in the device list.
 - Paste uses Cmd+V and restores your prior clipboard; a few secure fields block programmatic paste.
