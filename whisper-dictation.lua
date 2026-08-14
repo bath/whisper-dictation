@@ -63,6 +63,11 @@ local function resolveMic()
   return nil
 end
 
+-- Device enumeration is slow enough to clip the beginning of short phrases if
+-- it runs after the dictation hotkey is pressed. Resolve once while Hammerspoon
+-- loads this file; every recording can then launch FFmpeg immediately.
+local resolvedMic = resolveMic()
+
 -- Paste transcribed text into the focused field, then restore the clipboard.
 local function typeText(text)
   text = text:gsub("^%s+", ""):gsub("%s+$", "")
@@ -90,7 +95,7 @@ end
 
 local function startRec()
   if recording then return end
-  local mic = resolveMic()
+  local mic = resolvedMic
   if not mic then
     hs.alert.show("no built-in Mac microphone found — set MIC in whisper-dictation.lua")
     return

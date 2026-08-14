@@ -75,7 +75,7 @@ Hammerspoon (menu-bar 🎙 → *Reload Config*):
 | setting   | default                                          | notes |
 |-----------|--------------------------------------------------|-------|
 | `MODEL`   | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin`  | any ggml model; smaller = faster, less accurate |
-| `MIC`     | `nil`                                            | auto-detects the Mac's built-in mic; set an avfoundation name such as `":Studio Display Microphone"` to override |
+| `MIC`     | `nil`                                            | detects the Mac's built-in mic once when Hammerspoon loads; set an avfoundation name such as `":Studio Display Microphone"` to override |
 | `LANG`    | `"en"`                                           | or `"auto"` |
 | `HOTKEYS` | `{{}, "f18"}`, `{{"alt"}, "space"}`              | add/replace toggle hotkeys |
 
