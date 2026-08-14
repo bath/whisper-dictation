@@ -16,7 +16,8 @@ One command (needs [Homebrew](https://brew.sh)):
 curl -fsSL https://raw.githubusercontent.com/bath/whisper-dictation/main/install.sh | bash
 ```
 
-It installs the tools, downloads the Whisper model (~550 MB), and copies the required configs.
+It installs the tools, downloads the Whisper model (~550 MB), builds the native warm recorder,
+and copies the required configs.
 Karabiner does not allow imported rules to be enabled by the installer, so the clicks below are
 required before F5 will work.
 
@@ -33,8 +34,8 @@ required before F5 will work.
 
 ## Use it
 
-Click into any text field → **press F5** → talk → **press F5 again**. Text appears a second or
-two later.
+Wait for the menu-bar icon to change from ⏳ to 🎙, then click into any text field → **press
+F5** → talk → **press F5 again**. Text appears shortly after you stop.
 
 > **No F5 key, or want to skip Karabiner?** `⌥Space` toggles dictation too — that path only
 > needs step 1 (Hammerspoon permissions). Karabiner exists solely to make the *bare* dictation
@@ -49,6 +50,8 @@ two later.
   Monitoring permission. If it does not, enable Hammerspoon under both **Microphone** and
   **Accessibility**, then reload its config from the menu-bar icon.
 - **The hotkey works:** the Hammerspoon menu icon changes from 🎙 to 🔴 while recording.
+- **The menu stays at ⏳:** the native recorder or persistent Whisper server failed to warm.
+  Open the Hammerspoon Console for the error, then reload its config.
 
 ---
 
@@ -56,16 +59,21 @@ two later.
 
 ```
 F5 / dictation key ──(Karabiner)──▶ F18 ──(Hammerspoon)──▶ toggle
-   start:  ffmpeg records the mic → a temp .wav
-   stop:   whisper-cli transcribes it → text → pasted into the focused app (clipboard restored)
+   load:   native recorder opens the mic + whisper-server loads the model once
+   start:  recorder keeps 250 ms of pre-roll and begins the in-memory take immediately
+   stop:   recorder writes a temp .wav → warm Whisper server → paste (clipboard restored)
 ```
 
-Everything is a temp file that's overwritten each time; nothing is uploaded.
+The microphone stays open while Hammerspoon is running, so macOS shows its orange microphone
+indicator. Outside an active dictation, only a rolling 250 ms buffer exists in memory and is
+continually discarded. A temp WAV is written only after you press F5 to record. Nothing is
+uploaded.
 
 ## Requirements
 
-macOS (Apple-Silicon Homebrew paths) · Homebrew · `ffmpeg` · `whisper-cli` · Hammerspoon ·
-Karabiner-Elements (for the F5 key). The installer handles all of these.
+macOS (Apple-Silicon Homebrew paths) · Homebrew · Apple Command Line Tools · `whisper-server` ·
+Hammerspoon · Karabiner-Elements (for the F5 key). The installer handles these except the
+Command Line Tools, which Homebrew normally already requires.
 
 ## Customize
 
@@ -75,8 +83,9 @@ Hammerspoon (menu-bar 🎙 → *Reload Config*):
 | setting   | default                                          | notes |
 |-----------|--------------------------------------------------|-------|
 | `MODEL`   | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin`  | any ggml model; smaller = faster, less accurate |
-| `MIC`     | `nil`                                            | detects the Mac's built-in mic once when Hammerspoon loads; set an avfoundation name such as `":Studio Display Microphone"` to override |
+| `MIC`     | `nil`                                            | uses the Mac's built-in mic; set an exact name such as `":Studio Display Microphone"` to override |
 | `LANG`    | `"en"`                                           | or `"auto"` |
+| `PRE_ROLL_MS` | `250`                                        | memory-only audio retained before F5 so the first word is never clipped |
 | `HOTKEYS` | `{{}, "f18"}`, `{{"alt"}, "space"}`              | add/replace toggle hotkeys |
 
 ## Manual install (no curl)
@@ -91,6 +100,8 @@ cd whisper-dictation
 
 ```sh
 rm ~/.hammerspoon/whisper-dictation.lua
+rm ~/.hammerspoon/WhisperRecorder.swift
+rm ~/.hammerspoon/bin/whisper-recorder
 rm ~/.config/karabiner/assets/complex_modifications/whisper-dictation.json
 # remove the require("whisper-dictation") line from ~/.hammerspoon/init.lua
 # disable the rule in Karabiner, and `brew uninstall --cask hammerspoon karabiner-elements` if unused
@@ -98,10 +109,10 @@ rm ~/.config/karabiner/assets/complex_modifications/whisper-dictation.json
 
 ## Notes / limitations
 
-- **Batch, not live** — text appears after you stop, not word-by-word. The tradeoff for a real
-  local model.
+- **Batch, not live** — text appears after you stop, not word-by-word.
+- The warm recorder deliberately keeps the microphone active for near-zero capture latency.
 - The built-in microphone is selected by name so an iPhone Continuity microphone cannot take
-  over merely because it appears first in AVFoundation's device list.
+  over merely because it appears first in the device list.
 - Paste uses Cmd+V and restores your prior clipboard; a few secure fields block programmatic paste.
 - Paths assume Apple-Silicon Homebrew (`/opt/homebrew`); adjust for Intel (`/usr/local`).
 

@@ -5,7 +5,7 @@
 #   ./install.sh            (from a local clone)
 #
 # Does everything that CAN be automated: installs deps via Homebrew, downloads the
-# Whisper model, drops the Hammerspoon + Karabiner config, restarts Hammerspoon.
+# Whisper model, builds the native recorder, drops the configs, and restarts Hammerspoon.
 # It CANNOT grant macOS permissions (Microphone/Accessibility/driver approval) —
 # those are user-gated by macOS and printed as manual steps at the end.
 set -euo pipefail
@@ -15,6 +15,9 @@ MODEL_DIR="$HOME/.cache/whisper"
 MODEL="$MODEL_DIR/ggml-large-v3-turbo-q5_0.bin"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
 HS_DIR="$HOME/.hammerspoon"
+RECORDER_SRC="$HS_DIR/WhisperRecorder.swift"
+RECORDER_DIR="$HS_DIR/bin"
+RECORDER="$RECORDER_DIR/whisper-recorder"
 KB_DIR="$HOME/.config/karabiner/assets/complex_modifications"
 APPLICATIONS_DIR="${APPLICATIONS_DIR:-/Applications}"
 
@@ -46,9 +49,12 @@ if ! have brew; then
 fi
 echo "  ok"
 
-say "Command-line tools (ffmpeg, whisper-cli)"
-have ffmpeg      || { echo "  installing ffmpeg";      brew_install ffmpeg; }
-have whisper-cli || { echo "  installing whisper-cpp"; brew_install whisper-cpp; }
+say "Command-line tools (whisper-server, Swift compiler)"
+have whisper-server || { echo "  installing whisper-cpp"; brew_install whisper-cpp; }
+have xcrun && xcrun --find swiftc >/dev/null 2>&1 || {
+  echo "Apple Command Line Tools are required. Run: xcode-select --install"
+  exit 1
+}
 echo "  ok"
 
 say "Apps (Hammerspoon, Karabiner-Elements)"
@@ -66,11 +72,18 @@ fi
 say "Hammerspoon config"
 mkdir -p "$HS_DIR"
 fetch "whisper-dictation.lua" "$HS_DIR/whisper-dictation.lua"
+fetch "recorder/WhisperRecorder.swift" "$RECORDER_SRC"
+mkdir -p "$RECORDER_DIR"
+xcrun swiftc -O \
+  -framework AVFoundation \
+  -framework AudioToolbox \
+  -framework CoreAudio \
+  "$RECORDER_SRC" -o "$RECORDER" </dev/null
 touch "$HS_DIR/init.lua"
 if ! grep -q 'require("whisper-dictation")' "$HS_DIR/init.lua"; then
   printf '\nrequire("whisper-dictation")\n' >> "$HS_DIR/init.lua"
 fi
-echo "  installed → $HS_DIR"
+echo "  installed + native recorder built → $HS_DIR"
 
 say "Karabiner rule (F5 / dictation key → F18)"
 mkdir -p "$KB_DIR"
