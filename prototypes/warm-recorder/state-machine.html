@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- PROTOTYPE — capture-helper logic walkthrough, not production UI. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Warm recorder state prototype</title>
+  <style>
+    body { font: 16px system-ui; max-width: 760px; margin: 40px auto; padding: 0 20px; }
+    button { margin: 4px; padding: 9px 13px; }
+    pre { background: #111; color: #c9f5d2; padding: 18px; min-height: 220px; white-space: pre-wrap; }
+    .walkthrough { border: 1px solid #bbb; padding: 12px; margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Warm recorder state machine</h1>
+  <p>Question: can a continuously warm, memory-only recorder make F5 effectively instantaneous while keeping Whisper as the sole STT model?</p>
+  <div>
+    <button data-action="ready">Helper ready</button>
+    <button data-action="start">F5 start</button>
+    <button data-action="stop">F5 stop</button>
+    <button data-action="transcribed">Whisper result</button>
+    <button data-action="fail">Helper failure</button>
+    <button data-action="reset">Reset</button>
+  </div>
+  <div class="walkthrough">
+    <strong>Guided walkthrough:</strong>
+    <button id="happy">Instant capture → transcript</button>
+    <button id="restart">Helper failure → restart</button>
+  </div>
+  <pre id="state"></pre>
+  <script>
+    const initial = () => ({ state: "booting", mic: "warming", ringBufferMs: 0, wav: null, whisper: "warm", history: [] });
+    let model = initial();
+    const render = () => document.querySelector("#state").textContent = JSON.stringify(model, null, 2);
+    const act = action => {
+      if (action === "ready") Object.assign(model, { state: "warm", mic: "active", ringBufferMs: 250 });
+      if (action === "start" && model.state === "warm") Object.assign(model, { state: "recording", wav: "open + 250ms pre-roll" });
+      if (action === "stop" && model.state === "recording") Object.assign(model, { state: "transcribing", wav: "finalized", whisper: "running" });
+      if (action === "transcribed" && model.state === "transcribing") Object.assign(model, { state: "warm", wav: null, whisper: "warm" });
+      if (action === "fail") Object.assign(model, { state: "failed", mic: "inactive", whisper: "warm" });
+      if (action === "reset") model = initial();
+      model.history.push(action);
+      render();
+    };
+    document.querySelectorAll("[data-action]").forEach(button => button.onclick = () => act(button.dataset.action));
+    document.querySelector("#happy").onclick = () => { model = initial(); ["ready", "start", "stop", "transcribed"].forEach(act); };
+    document.querySelector("#restart").onclick = () => { model = initial(); ["ready", "fail", "reset", "ready"].forEach(act); };
+    render();
+  </script>
+</body>
+</html>
