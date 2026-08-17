@@ -48,6 +48,9 @@ case "$url" in
   */whisper-dictation.lua)
     cp "$REPO_ROOT/whisper-dictation.lua" "$dest"
     ;;
+  */recorder/WhisperRecorder.swift)
+    cp "$REPO_ROOT/recorder/WhisperRecorder.swift" "$dest"
+    ;;
   */karabiner/whisper-dictation.json)
     cp "$REPO_ROOT/karabiner/whisper-dictation.json" "$dest"
     ;;
@@ -98,7 +101,6 @@ if [ -s "$TMP/brew-stdin.log" ]; then
 fi
 
 for invocation in \
-  "install ffmpeg" \
   "install whisper-cpp" \
   "install --cask hammerspoon" \
   "install --cask karabiner-elements"; do
@@ -112,6 +114,8 @@ done
 for artifact in \
   "$TMP/home/.cache/whisper/ggml-large-v3-turbo-q5_0.bin" \
   "$TMP/home/.hammerspoon/whisper-dictation.lua" \
+  "$TMP/home/.hammerspoon/WhisperRecorder.swift" \
+  "$TMP/home/.hammerspoon/bin/whisper-recorder" \
   "$TMP/home/.config/karabiner/assets/complex_modifications/whisper-dictation.json"; do
   if [ ! -f "$artifact" ]; then
     echo "FAIL: installer did not create $artifact" >&2
@@ -122,7 +126,8 @@ done
 
 grep -Fq 'Files installed — setup is not complete until you click these three things:' <<<"$output"
 grep -Fq 'If F5 asks you to enable Apple' <<<"$output"
-grep -Fq 'local MIC     = nil' "$TMP/home/.hammerspoon/whisper-dictation.lua"
+grep -Eq '^local MIC[[:space:]]*= nil' "$TMP/home/.hammerspoon/whisper-dictation.lua"
+test -x "$TMP/home/.hammerspoon/bin/whisper-recorder"
 if grep -Fq 'local MIC     = ":0"' "$TMP/home/.hammerspoon/whisper-dictation.lua"; then
   echo "FAIL: installed config still assumes AVFoundation device 0 is the built-in mic" >&2
   exit 1

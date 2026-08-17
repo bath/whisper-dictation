@@ -1,148 +1,315 @@
--- whisper-dictation.lua — a private, local replacement for macOS Dictation.
+-- whisper-dictation.lua — private, low-latency local dictation for macOS.
 --
--- Press a hotkey to start recording the mic; press again to stop. The audio is
--- transcribed locally with whisper.cpp and pasted into whatever field is
--- focused. Audio never leaves the machine.
---
--- Load it from your Hammerspoon init.lua with:   require("whisper-dictation")
---
--- Requirements (all local):
---   ffmpeg, whisper-cli  (brew install ffmpeg whisper-cpp)
---   a ggml Whisper model at MODEL below
--- Optional: Karabiner-Elements remaps the F5/dictation key to F18 so the bare
---   dictation key triggers this (see karabiner/whisper-dictation.json).
---
--- One-time macOS permissions (System Settings -> Privacy & Security):
---   * Microphone    -> enable Hammerspoon (so ffmpeg can capture the mic)
---   * Accessibility -> enable Hammerspoon (so it can paste into other apps)
+-- A persistent native helper prepares a stopped Core Audio HAL input unit, and
+-- a local whisper-server keeps the Whisper model loaded. The microphone remains
+-- inactive until the start hotkey, then releases again before transcription.
 
 -- ---- config -----------------------------------------------------------------
-local FFMPEG  = "/opt/homebrew/bin/ffmpeg"
-local WHISPER = "/opt/homebrew/bin/whisper-cli"
-local MODEL   = os.getenv("HOME") .. "/.cache/whisper/ggml-large-v3-turbo-q5_0.bin"
-local MIC     = nil               -- nil = auto-detect the Mac's built-in mic; see README for overrides
-local LANG    = "en"              -- spoken language, or "auto"
-local WAV     = "/tmp/whisper-dictate.wav"
-local OUTPFX  = "/tmp/whisper-dictate"    -- whisper writes OUTPFX.txt
--- Hotkeys that toggle dictation. f18 is what the Karabiner rule sends from the
--- F5/dictation key; alt+space is a keyboard-only fallback.
+local HOME           = os.getenv("HOME")
+local RECORDER       = HOME .. "/.hammerspoon/bin/whisper-recorder"
+local WHISPER_SERVER = "/opt/homebrew/bin/whisper-server"
+local CURL           = "/usr/bin/curl"
+local MODEL          = HOME .. "/.cache/whisper/ggml-large-v3-turbo-q5_0.bin"
+local MIC            = nil -- nil = built-in Mac mic; or an exact name such as ":Studio Display Microphone"
+local LANG           = "en"
+local WAV            = "/tmp/whisper-dictate.wav"
+local SERVER_HOST    = "127.0.0.1"
+local SERVER_PORT    = 8178
 local HOTKEYS = {
   { {},       "f18"   },
   { {"alt"},  "space" },
 }
 -- -----------------------------------------------------------------------------
 
-local recording = false
-local recTask = nil
+local SERVER_URL = "http://" .. SERVER_HOST .. ":" .. tostring(SERVER_PORT)
+local phase = "warming"
+local recorderReady = false
+local serverReady = false
+local recorderTask = nil
+local serverTask = nil
+local transcriptionTask = nil
+local recorderOutput = ""
+local recorderRetries = 0
+local serverRetries = 0
+local serverPollGeneration = 0
+local ownsServer = false
+local shuttingDown = false
+local stopRequestedNs = nil
+local transcriptionStartedNs = nil
+local lastMetrics = {}
+local microphoneActive = false
 
 local menu = hs.menubar.new()
-local function setIcon(s) if menu then menu:setTitle(s) end end
-setIcon("🎙")
+local function setIcon(icon) if menu then menu:setTitle(icon) end end
+setIcon("⏳")
 
--- Continuity microphones can appear before the Mac's own microphone in
--- AVFoundation's device list. Select the built-in input by name instead of
--- assuming device 0 is local; otherwise starting dictation wakes an iPhone.
-local function resolveMic()
-  if MIC then return MIC end
-
-  local command = FFMPEG .. " -hide_banner -f avfoundation -list_devices true -i '' 2>&1"
-  local output = hs.execute(command) or ""
-  local readingAudioDevices = false
-
-  for line in output:gmatch("[^\r\n]+") do
-    if line:find("AVFoundation audio devices:", 1, true) then
-      readingAudioDevices = true
-    elseif readingAudioDevices then
-      local name = line:match("%[%d+%]%s+(.+)$")
-      if name and (name == "Built-in Microphone" or name:match("^MacBook .+ Microphone$")) then
-        return ":" .. name
-      end
-    end
+local function statusText()
+  if phase == "warming" then
+    local waiting = {}
+    if not recorderReady then table.insert(waiting, "recorder") end
+    if not serverReady then table.insert(waiting, "Whisper") end
+    return "Warming " .. table.concat(waiting, " + ")
   end
-
-  return nil
+  if phase == "ready" then return "Ready" end
+  if phase == "recording" then return "Recording" end
+  if phase == "transcribing" then return "Transcribing" end
+  return phase
 end
 
--- Device enumeration is slow enough to clip the beginning of short phrases if
--- it runs after the dictation hotkey is pressed. Resolve once while Hammerspoon
--- loads this file; every recording can then launch FFmpeg immediately.
-local resolvedMic = resolveMic()
+local function refreshReadyState(showAlert)
+  if recorderReady and serverReady and phase == "warming" then
+    phase = "ready"
+    setIcon("🎙")
+    if showAlert then hs.alert.show("Local Whisper dictation ready") end
+  end
+end
 
 -- Paste transcribed text into the focused field, then restore the clipboard.
 local function typeText(text)
   text = text:gsub("^%s+", ""):gsub("%s+$", "")
   if text == "" then hs.alert.show("… no speech"); return end
-  local prev = hs.pasteboard.getContents()
+  local previous = hs.pasteboard.getContents()
   hs.pasteboard.setContents(text)
   hs.eventtap.keyStroke({"cmd"}, "v")
   hs.timer.doAfter(0.35, function()
-    if prev ~= nil then hs.pasteboard.setContents(prev) end
+    if previous ~= nil then hs.pasteboard.setContents(previous) end
   end)
 end
 
-local function transcribe()
-  setIcon("⏳")
-  local t = hs.task.new(WHISPER, function(code, stdout, stderr)
-    setIcon("🎙")
-    if code ~= 0 then hs.alert.show("whisper failed"); print(stderr); return end
-    local f = io.open(OUTPFX .. ".txt", "r")
-    if not f then hs.alert.show("no transcript"); return end
-    local text = f:read("*a"); f:close()
-    typeText(text)
-  end, { "-m", MODEL, "-f", WAV, "-l", LANG, "-otxt", "-of", OUTPFX, "-np", "-nt" })
-  t:start()
-end
-
-local function startRec()
-  if recording then return end
-  local mic = resolvedMic
-  if not mic then
-    hs.alert.show("no built-in Mac microphone found — set MIC in whisper-dictation.lua")
+local function transcribe(path)
+  if not serverReady then
+    phase = "warming"
+    setIcon("⏳")
+    hs.alert.show("Whisper is restarting — try again in a moment")
     return
   end
-  recording = true
-  setIcon("🔴")
-  os.remove(WAV); os.remove(OUTPFX .. ".txt")
-  recTask = hs.task.new(FFMPEG, function(code, stdout, stderr)
-    -- ffmpeg has exited.
-    if recording then
-      -- It quit without us asking → startup failure (mic permission, bad device).
-      recording = false
+
+  transcriptionStartedNs = hs.timer.absoluteTime()
+  transcriptionTask = hs.task.new(CURL, function(code, stdout, stderr)
+    local completedNs = hs.timer.absoluteTime()
+    lastMetrics.transcription_ms = (completedNs - transcriptionStartedNs) / 1000000
+    if stopRequestedNs then
+      lastMetrics.stop_to_text_ms = (completedNs - stopRequestedNs) / 1000000
+    end
+    transcriptionTask = nil
+    if recorderReady and serverReady then
+      phase = "ready"
       setIcon("🎙")
-      hs.alert.show("mic error — check Hammerspoon Microphone permission")
+    else
+      phase = "warming"
+      setIcon("⏳")
+    end
+    if code ~= 0 then
+      hs.alert.show("Whisper transcription failed")
       print(stderr)
       return
     end
-    transcribe()  -- normal stop: the WAV is finalized, go transcribe it
+    typeText(stdout)
   end, {
-    "-nostdin", "-y", "-f", "avfoundation", "-i", mic,
-    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", WAV,
+    "-sS", "--fail-with-body",
+    "-F", "file=@" .. path,
+    "-F", "response_format=text",
+    "-F", "language=" .. LANG,
+    SERVER_URL .. "/inference",
   })
-  recTask:start()
+  transcriptionTask:start()
 end
 
-local function stopRec()
-  if not recording then return end
-  recording = false
+local function handleRecorderEvent(event)
+  if event.event == "ready" then
+    recorderReady = true
+    recorderRetries = 0
+    microphoneActive = event.microphone_active == true
+    lastMetrics.recorder_backend = event.backend
+    lastMetrics.sample_rate = event.sample_rate
+    refreshReadyState(true)
+  elseif event.event == "started" then
+    microphoneActive = event.microphone_active == true
+    lastMetrics.capture_first_buffer_ms = event.command_to_first_buffer_ms
+  elseif event.event == "stopped" then
+    microphoneActive = event.microphone_active == true
+    lastMetrics.wav_finalize_ms = event.command_to_wav_ms
+    lastMetrics.wav_write_ms = event.wav_write_ms
+    lastMetrics.microphone_release_ms = event.microphone_release_ms
+    lastMetrics.samples = event.samples
+    transcribe(event.path or WAV)
+  elseif event.event == "error" then
+    recorderReady = false
+    microphoneActive = false
+    phase = "warming"
+    setIcon("⏳")
+    print("Recorder error: " .. tostring(event.message or "unknown error"))
+  end
+end
+
+local function consumeRecorderOutput(chunk)
+  recorderOutput = recorderOutput .. (chunk or "")
+  while true do
+    local newline = recorderOutput:find("\n", 1, true)
+    if not newline then return end
+    local line = recorderOutput:sub(1, newline - 1)
+    recorderOutput = recorderOutput:sub(newline + 1)
+    if line ~= "" then
+      local ok, event = pcall(hs.json.decode, line)
+      if ok and event then handleRecorderEvent(event) end
+    end
+  end
+end
+
+local function startRecorder()
+  recorderOutput = ""
+  local arguments = {}
+  if MIC then
+    table.insert(arguments, "--device")
+    table.insert(arguments, MIC:gsub("^:", ""))
+  end
+
+  recorderTask = hs.task.new(RECORDER, function(code, stdout, stderr)
+    recorderTask = nil
+    recorderReady = false
+    if not shuttingDown then
+      phase = "warming"
+      setIcon("⏳")
+      recorderRetries = recorderRetries + 1
+      local retryDelay = math.min(5, 0.5 * (2 ^ (recorderRetries - 1)))
+      if recorderRetries == 3 then
+        hs.alert.show("Recorder is retrying — check Hammerspoon Microphone permission")
+      end
+      if stderr and stderr ~= "" then print(stderr) end
+      hs.timer.doAfter(retryDelay, startRecorder)
+    end
+  end, function(_, stdout, stderr)
+    consumeRecorderOutput(stdout)
+    if stderr and stderr ~= "" then print(stderr) end
+    return true
+  end, arguments)
+  recorderTask:start()
+end
+
+local pollServer
+pollServer = function(generation)
+  if shuttingDown or serverReady or generation ~= serverPollGeneration then return end
+  hs.http.asyncGet(SERVER_URL .. "/health", nil, function(status)
+    if generation ~= serverPollGeneration then return end
+    if status == 200 then
+      serverReady = true
+      serverRetries = 0
+      refreshReadyState(true)
+    else
+      hs.timer.doAfter(0.1, function() pollServer(generation) end)
+    end
+  end)
+end
+
+local startOrReuseServer
+local function launchServer()
+  ownsServer = true
+  serverPollGeneration = serverPollGeneration + 1
+  local generation = serverPollGeneration
+  serverTask = hs.task.new(WHISPER_SERVER, function(code, stdout, stderr)
+    serverTask = nil
+    serverReady = false
+    serverPollGeneration = serverPollGeneration + 1
+    if not shuttingDown then
+      phase = "warming"
+      setIcon("⏳")
+      serverRetries = serverRetries + 1
+      local retryDelay = math.min(5, 0.5 * (2 ^ (serverRetries - 1)))
+      if serverRetries == 3 then hs.alert.show("Whisper server is retrying") end
+      if stderr and stderr ~= "" then print(stderr) end
+      hs.timer.doAfter(retryDelay, startOrReuseServer)
+    end
+  end, function(_, _, _) return true end, {
+    "-m", MODEL,
+    "--host", SERVER_HOST,
+    "--port", tostring(SERVER_PORT),
+    "-l", LANG,
+    "-nt",
+    "-nlp",
+  })
+  serverTask:start()
+  pollServer(generation)
+end
+
+startOrReuseServer = function()
+  if shuttingDown then return end
+  hs.http.asyncGet(SERVER_URL .. "/health", nil, function(status)
+    if status == 200 then
+      serverReady = true
+      serverRetries = 0
+      refreshReadyState(true)
+    else
+      launchServer()
+    end
+  end)
+end
+
+local function startRecording()
+  if phase ~= "ready" then
+    hs.alert.show(statusText())
+    return
+  end
+  phase = "recording"
+  setIcon("🔴")
+  recorderTask:setInput("START " .. WAV .. "\n")
+end
+
+local function stopRecording()
+  if phase ~= "recording" then return end
+  phase = "transcribing"
   setIcon("⏳")
-  if recTask then recTask:terminate() end  -- SIGTERM → ffmpeg finalizes the WAV, then its callback transcribes
+  stopRequestedNs = hs.timer.absoluteTime()
+  recorderTask:setInput("STOP\n")
 end
 
 local function toggle()
-  if recording then stopRec() else startRec() end
+  if phase == "recording" then stopRecording() else startRecording() end
 end
 
-for _, hk in ipairs(HOTKEYS) do
-  hs.hotkey.bind(hk[1], hk[2], toggle)
+for _, hotkey in ipairs(HOTKEYS) do
+  hs.hotkey.bind(hotkey[1], hotkey[2], toggle)
 end
 
 if menu then
-  menu:setMenu({
-    { title = "Toggle dictation", fn = toggle },
-    { title = "Reload Hammerspoon config", fn = function() hs.reload() end },
-  })
+  menu:setMenu(function()
+    return {
+      { title = "Status: " .. statusText(), disabled = true },
+      { title = "Toggle dictation", fn = toggle },
+      { title = "Reload Hammerspoon config", fn = function() hs.reload() end },
+    }
+  end)
 end
 
-hs.alert.show("Local Whisper dictation ready")
+local previousShutdownCallback = hs.shutdownCallback
+hs.shutdownCallback = function()
+  shuttingDown = true
+  if recorderTask then
+    recorderTask:setStreamingCallback(nil)
+    recorderTask:setCallback(nil)
+    recorderTask:setInput("QUIT\n")
+  end
+  if serverTask and ownsServer then
+    serverTask:setStreamingCallback(nil)
+    serverTask:setCallback(nil)
+    serverTask:terminate()
+  end
+  if previousShutdownCallback then previousShutdownCallback() end
+end
 
-return { toggle = toggle }
+startRecorder()
+startOrReuseServer()
+
+return {
+  toggle = toggle,
+  status = function() return phase end,
+  diagnostics = function()
+    return {
+      phase = phase,
+      recorder_ready = recorderReady,
+      server_ready = serverReady,
+      owns_server = ownsServer,
+      microphone_active = microphoneActive,
+      last_metrics = lastMetrics,
+    }
+  end,
+}
