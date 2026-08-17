@@ -12,8 +12,8 @@ set -euo pipefail
 
 RAW="https://raw.githubusercontent.com/bath/whisper-dictation/main"
 MODEL_DIR="$HOME/.cache/whisper"
-MODEL="$MODEL_DIR/ggml-large-v3-turbo-q5_0.bin"
-MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+MODEL="$MODEL_DIR/ggml-small.en-q5_1.bin"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin"
 HS_DIR="$HOME/.hammerspoon"
 RECORDER_SRC="$HS_DIR/WhisperRecorder.swift"
 RECORDER_DIR="$HS_DIR/bin"
@@ -63,7 +63,7 @@ say "Apps (Hammerspoon, Karabiner-Elements)"
 [ -d "$APPLICATIONS_DIR/Karabiner-Elements.app" ] || { echo "  installing karabiner-elements"; brew_install --cask karabiner-elements; }
 echo "  ok"
 
-say "Whisper model (~550 MB)"
+say "Whisper model (~190 MB)"
 if [ -f "$MODEL" ]; then echo "  already present"; else
   mkdir -p "$MODEL_DIR"
   curl -fL --progress-bar "$MODEL_URL" -o "$MODEL"

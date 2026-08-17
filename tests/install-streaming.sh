@@ -54,7 +54,7 @@ case "$url" in
   */karabiner/whisper-dictation.json)
     cp "$REPO_ROOT/karabiner/whisper-dictation.json" "$dest"
     ;;
-  */ggml-large-v3-turbo-q5_0.bin)
+  */ggml-small.en-q5_1.bin)
     : >"$dest"
     ;;
   *)
@@ -112,7 +112,7 @@ for invocation in \
 done
 
 for artifact in \
-  "$TMP/home/.cache/whisper/ggml-large-v3-turbo-q5_0.bin" \
+  "$TMP/home/.cache/whisper/ggml-small.en-q5_1.bin" \
   "$TMP/home/.hammerspoon/whisper-dictation.lua" \
   "$TMP/home/.hammerspoon/WhisperRecorder.swift" \
   "$TMP/home/.hammerspoon/bin/whisper-recorder" \

@@ -16,7 +16,7 @@ One command (needs [Homebrew](https://brew.sh)):
 curl -fsSL https://raw.githubusercontent.com/bath/whisper-dictation/main/install.sh | bash
 ```
 
-It installs the tools, downloads the Whisper model (~550 MB), builds the native recorder helper,
+It installs the tools, downloads the Whisper model (~190 MB), builds the native recorder helper,
 and copies the required configs.
 Karabiner does not allow imported rules to be enabled by the installer, so the clicks below are
 required before F5 will work.
@@ -83,7 +83,7 @@ Hammerspoon (menu-bar 🎙 → *Reload Config*):
 
 | setting   | default                                          | notes |
 |-----------|--------------------------------------------------|-------|
-| `MODEL`   | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin`  | any ggml model; smaller = faster, less accurate |
+| `MODEL`   | `~/.cache/whisper/ggml-small.en-q5_1.bin`  | any ggml model; smaller = faster, less accurate. For noisy rooms, accents, or heavy jargon, `ggml-large-v3-turbo-q5_0.bin` is markedly more robust (~3× slower) |
 | `MIC`     | `nil`                                            | uses the Mac's built-in mic; set an exact name such as `":Studio Display Microphone"` to override |
 | `LANG`    | `"en"`                                           | or `"auto"` |
 | `HOTKEYS` | `{{}, "f18"}`, `{{"alt"}, "space"}`              | add/replace toggle hotkeys |

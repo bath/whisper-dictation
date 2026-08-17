@@ -9,7 +9,7 @@ local HOME           = os.getenv("HOME")
 local RECORDER       = HOME .. "/.hammerspoon/bin/whisper-recorder"
 local WHISPER_SERVER = "/opt/homebrew/bin/whisper-server"
 local CURL           = "/usr/bin/curl"
-local MODEL          = HOME .. "/.cache/whisper/ggml-large-v3-turbo-q5_0.bin"
+local MODEL          = HOME .. "/.cache/whisper/ggml-small.en-q5_1.bin"
 local MIC            = nil -- nil = built-in Mac mic; or an exact name such as ":Studio Display Microphone"
 local LANG           = "en"
 local WAV            = "/tmp/whisper-dictate.wav"
