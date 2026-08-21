@@ -11,7 +11,7 @@ local curlStarts = 0
 local taskCreationsAtReady = 0
 local recorderCommands = {}
 local recorderArguments = nil
-local pastedText = nil
+local clipboard = "previous clipboard contents"
 local boundHotkeys = 0
 
 local fakeHs = {
@@ -26,8 +26,8 @@ local fakeHs = {
     end,
   },
   pasteboard = {
-    getContents = function() return nil end,
-    setContents = function(text) pastedText = text end,
+    getContents = function() return clipboard end,
+    setContents = function(text) clipboard = text end,
   },
   timer = {
     absoluteTime = (function()
@@ -98,7 +98,8 @@ module.toggle()
 assert(recorderCommands[2] == "STOP\n", "second toggle should stop the native helper")
 assert(module.diagnostics().microphone_active == false, "the microphone must release before transcription")
 assert(curlStarts == 1, "the finalized WAV should use the persistent Whisper server")
-assert(pastedText == "test transcript", "the server transcript should be pasted")
+assert(clipboard == "test transcript",
+  "the transcript must stay on the clipboard so a failed paste does not lose it")
 assert(module.status() == "ready", "pipeline should return to ready after transcription")
 local metrics = module.diagnostics().last_metrics
 assert(metrics.capture_first_buffer_ms == 64, "first-buffer timing should be retained")
