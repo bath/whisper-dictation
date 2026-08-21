@@ -3,13 +3,15 @@
 -- A persistent native helper prepares a stopped Core Audio HAL input unit, and
 -- a local whisper-server keeps the Whisper model loaded. The microphone remains
 -- inactive until the start hotkey, then releases again before transcription.
+--
+-- whisper-server is owned by launchd (LaunchAgent com.whisper-dictation.server,
+-- installed by install.sh) with KeepAlive, so it restarts on its own if it dies.
+-- This module never launches the server; it polls /health and reconnects.
 
 -- ---- config -----------------------------------------------------------------
 local HOME           = os.getenv("HOME")
 local RECORDER       = HOME .. "/.hammerspoon/bin/whisper-recorder"
-local WHISPER_SERVER = "/opt/homebrew/bin/whisper-server"
 local CURL           = "/usr/bin/curl"
-local MODEL          = HOME .. "/.cache/whisper/ggml-large-v3-turbo-q5_0.bin"
 local MIC            = nil -- nil = built-in Mac mic; or an exact name such as ":Studio Display Microphone"
 local LANG           = "en"
 local WAV            = "/tmp/whisper-dictate.wav"
@@ -26,13 +28,12 @@ local phase = "warming"
 local recorderReady = false
 local serverReady = false
 local recorderTask = nil
-local serverTask = nil
 local transcriptionTask = nil
 local recorderOutput = ""
 local recorderRetries = 0
-local serverRetries = 0
 local serverPollGeneration = 0
-local ownsServer = false
+local serverWatchdog = nil
+local resetServer -- forward declaration; defined in the server section
 local shuttingDown = false
 local stopRequestedNs = nil
 local transcriptionStartedNs = nil
@@ -90,17 +91,20 @@ local function transcribe(path)
       lastMetrics.stop_to_text_ms = (completedNs - stopRequestedNs) / 1000000
     end
     transcriptionTask = nil
+    if code ~= 0 then
+      hs.alert.show("Whisper transcription failed")
+      print(stderr)
+      -- The most common cause is a dead server; re-enter the health-poll loop
+      -- so a launchd-restarted server is adopted without a config reload.
+      resetServer()
+      return
+    end
     if recorderReady and serverReady then
       phase = "ready"
       setIcon("🎙")
     else
       phase = "warming"
       setIcon("⏳")
-    end
-    if code ~= 0 then
-      hs.alert.show("Whisper transcription failed")
-      print(stderr)
-      return
     end
     typeText(stdout)
   end, {
@@ -191,56 +195,37 @@ pollServer = function(generation)
     if generation ~= serverPollGeneration then return end
     if status == 200 then
       serverReady = true
-      serverRetries = 0
       refreshReadyState(true)
     else
-      hs.timer.doAfter(0.1, function() pollServer(generation) end)
+      hs.timer.doAfter(0.25, function() pollServer(generation) end)
     end
   end)
 end
 
-local startOrReuseServer
-local function launchServer()
-  ownsServer = true
+local function watchServer()
   serverPollGeneration = serverPollGeneration + 1
-  local generation = serverPollGeneration
-  serverTask = hs.task.new(WHISPER_SERVER, function(code, stdout, stderr)
-    serverTask = nil
-    serverReady = false
-    serverPollGeneration = serverPollGeneration + 1
-    if not shuttingDown then
-      phase = "warming"
-      setIcon("⏳")
-      serverRetries = serverRetries + 1
-      local retryDelay = math.min(5, 0.5 * (2 ^ (serverRetries - 1)))
-      if serverRetries == 3 then hs.alert.show("Whisper server is retrying") end
-      if stderr and stderr ~= "" then print(stderr) end
-      hs.timer.doAfter(retryDelay, startOrReuseServer)
-    end
-  end, function(_, _, _) return true end, {
-    "-m", MODEL,
-    "--host", SERVER_HOST,
-    "--port", tostring(SERVER_PORT),
-    "-l", LANG,
-    "-nt",
-    "-nlp",
-  })
-  serverTask:start()
-  pollServer(generation)
+  pollServer(serverPollGeneration)
 end
 
-startOrReuseServer = function()
-  if shuttingDown then return end
-  hs.http.asyncGet(SERVER_URL .. "/health", nil, function(status)
-    if status == 200 then
-      serverReady = true
-      serverRetries = 0
-      refreshReadyState(true)
-    else
-      launchServer()
-    end
-  end)
+-- The server stopped answering. Drop back to warming and poll until launchd
+-- restarts it (issue #4: an adopted server was never watched before).
+resetServer = function()
+  serverReady = false
+  phase = "warming"
+  setIcon("⏳")
+  watchServer()
 end
+
+-- Catch a server that dies while dictation is idle, so the next dictation
+-- does not have to fail once before recovery starts.
+serverWatchdog = hs.timer.doEvery(10, function()
+  if shuttingDown or not serverReady or phase ~= "ready" then return end
+  local generation = serverPollGeneration
+  hs.http.asyncGet(SERVER_URL .. "/health", nil, function(status)
+    if shuttingDown or not serverReady or generation ~= serverPollGeneration then return end
+    if status ~= 200 then resetServer() end
+  end)
+end)
 
 local function startRecording()
   if phase ~= "ready" then
@@ -286,16 +271,12 @@ hs.shutdownCallback = function()
     recorderTask:setCallback(nil)
     recorderTask:setInput("QUIT\n")
   end
-  if serverTask and ownsServer then
-    serverTask:setStreamingCallback(nil)
-    serverTask:setCallback(nil)
-    serverTask:terminate()
-  end
+  if serverWatchdog then serverWatchdog:stop() end
   if previousShutdownCallback then previousShutdownCallback() end
 end
 
 startRecorder()
-startOrReuseServer()
+watchServer()
 
 return {
   toggle = toggle,
@@ -305,7 +286,6 @@ return {
       phase = phase,
       recorder_ready = recorderReady,
       server_ready = serverReady,
-      owns_server = ownsServer,
       microphone_active = microphoneActive,
       last_metrics = lastMetrics,
     }

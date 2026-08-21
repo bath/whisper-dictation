@@ -38,6 +38,7 @@ local fakeHs = {
       end
     end)(),
     doAfter = function(_, callback) callback() end,
+    doEvery = function(_, _) return { stop = function() end } end,
   },
 }
 
@@ -83,7 +84,7 @@ assert(module.status() == "ready", "recorder and server should prepare during mo
 assert(module.diagnostics().microphone_active == false, "the microphone must be inactive while ready")
 assert(recorderStarts == 1, "one persistent recorder helper should start")
 assert(#recorderArguments == 0, "the helper should not receive warm-microphone or pre-roll options")
-assert(serverStarts == 0, "a healthy existing Whisper server should be reused")
+assert(serverStarts == 0, "the module must never launch whisper-server (launchd owns it)")
 assert(boundHotkeys == 2, "both dictation hotkeys should be bound")
 taskCreationsAtReady = recorderStarts + serverStarts + curlStarts
 

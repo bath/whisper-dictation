@@ -20,6 +20,11 @@ RECORDER_DIR="$HS_DIR/bin"
 RECORDER="$RECORDER_DIR/whisper-recorder"
 KB_DIR="$HOME/.config/karabiner/assets/complex_modifications"
 APPLICATIONS_DIR="${APPLICATIONS_DIR:-/Applications}"
+SERVER_LABEL="com.whisper-dictation.server"
+AGENT_DIR="$HOME/Library/LaunchAgents"
+AGENT_PLIST="$AGENT_DIR/$SERVER_LABEL.plist"
+SERVER_PORT=8178
+SERVER_LOG="/tmp/whisper-server.log"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
@@ -84,6 +89,45 @@ if ! grep -q 'require("whisper-dictation")' "$HS_DIR/init.lua"; then
   printf '\nrequire("whisper-dictation")\n' >> "$HS_DIR/init.lua"
 fi
 echo "  installed + native recorder built → $HS_DIR"
+
+say "Whisper server LaunchAgent (launchd keeps it alive)"
+SERVER_BIN="$(command -v whisper-server || echo /opt/homebrew/bin/whisper-server)"
+mkdir -p "$AGENT_DIR"
+cat > "$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$SERVER_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$SERVER_BIN</string>
+    <string>-m</string><string>$MODEL</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>$SERVER_PORT</string>
+    <string>-l</string><string>en</string>
+    <string>-nt</string>
+    <string>-nlp</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>$SERVER_LOG</string>
+  <key>StandardErrorPath</key><string>$SERVER_LOG</string>
+</dict>
+</plist>
+PLIST
+# Replace any previous agent, then free the port from orphaned servers left
+# behind by older Hammerspoon-launched setups.
+launchctl bootout "gui/$(id -u)/$SERVER_LABEL" >/dev/null 2>&1 || true
+ORPHANS="$(lsof -ti "tcp:$SERVER_PORT" 2>/dev/null || true)"
+if [ -n "$ORPHANS" ]; then
+  echo "  stopping orphaned process(es) on port $SERVER_PORT"
+  kill $ORPHANS 2>/dev/null || true
+  sleep 1
+fi
+launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+echo "  installed + started → $AGENT_PLIST (log: $SERVER_LOG)"
 
 say "Karabiner rule (F5 / dictation key → F18)"
 mkdir -p "$KB_DIR"

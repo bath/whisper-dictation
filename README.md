@@ -53,7 +53,8 @@ F5** → talk → **press F5 again**. Text appears shortly after you stop.
   again. macOS may defer this prompt until the helper first starts the input hardware.
 - **The hotkey works:** the Hammerspoon menu icon changes from 🎙 to 🔴 while recording.
 - **The menu stays at ⏳:** the native recorder or persistent Whisper server failed to warm.
-  Open the Hammerspoon Console for the error, then reload its config.
+  Open the Hammerspoon Console for recorder errors, and `/tmp/whisper-server.log` for server
+  errors. launchd restarts the server automatically; dictation reconnects on its own.
 
 ---
 
@@ -70,6 +71,11 @@ The microphone is inactive before F5 and is released again as soon as you stop r
 helper process and Whisper model stay loaded, but no audio is captured outside an active take.
 A temp WAV is written after you stop. Nothing is uploaded.
 
+`whisper-server` runs as a launchd LaunchAgent (`com.whisper-dictation.server`) with
+`KeepAlive`, so launchd restarts it if it dies or after a reboot. The Hammerspoon module never
+launches the server itself: it polls `/health`, reconnects when the server comes back, and
+drops to ⏳ while it waits.
+
 ## Requirements
 
 macOS (Apple-Silicon Homebrew paths) · Homebrew · Apple Command Line Tools · `whisper-server` ·
@@ -81,9 +87,12 @@ Command Line Tools, which Homebrew normally already requires.
 Edit the config block at the top of `~/.hammerspoon/whisper-dictation.lua`, then reload
 Hammerspoon (menu-bar 🎙 → *Reload Config*):
 
+To change the Whisper **model** or other server flags, edit
+`~/Library/LaunchAgents/com.whisper-dictation.server.plist` and restart the agent
+(`launchctl kickstart -k gui/$(id -u)/com.whisper-dictation.server`), or re-run `install.sh`.
+
 | setting   | default                                          | notes |
 |-----------|--------------------------------------------------|-------|
-| `MODEL`   | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin`  | any ggml model; smaller = faster, less accurate |
 | `MIC`     | `nil`                                            | uses the Mac's built-in mic; set an exact name such as `":Studio Display Microphone"` to override |
 | `LANG`    | `"en"`                                           | or `"auto"` |
 | `HOTKEYS` | `{{}, "f18"}`, `{{"alt"}, "space"}`              | add/replace toggle hotkeys |
@@ -99,6 +108,8 @@ cd whisper-dictation
 ## Uninstall
 
 ```sh
+launchctl bootout gui/$(id -u)/com.whisper-dictation.server
+rm ~/Library/LaunchAgents/com.whisper-dictation.server.plist
 rm ~/.hammerspoon/whisper-dictation.lua
 rm ~/.hammerspoon/WhisperRecorder.swift
 rm ~/.hammerspoon/bin/whisper-recorder
