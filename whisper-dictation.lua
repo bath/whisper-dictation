@@ -64,16 +64,14 @@ local function refreshReadyState(showAlert)
   end
 end
 
--- Paste transcribed text into the focused field, then restore the clipboard.
+-- Paste transcribed text into the focused field. The transcript stays on the
+-- clipboard, so the text survives when the paste lands in a window with no
+-- focused text field.
 local function typeText(text)
   text = text:gsub("^%s+", ""):gsub("%s+$", "")
   if text == "" then hs.alert.show("… no speech"); return end
-  local previous = hs.pasteboard.getContents()
   hs.pasteboard.setContents(text)
   hs.eventtap.keyStroke({"cmd"}, "v")
-  hs.timer.doAfter(0.35, function()
-    if previous ~= nil then hs.pasteboard.setContents(previous) end
-  end)
 end
 
 local function transcribe(path)

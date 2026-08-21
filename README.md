@@ -118,7 +118,7 @@ rm ~/.config/karabiner/assets/complex_modifications/whisper-dictation.json
   was shorter than the time it takes to move from pressing the key to speaking.
 - The built-in microphone is selected by name so an iPhone Continuity microphone cannot take
   over merely because it appears first in the device list.
-- Paste uses Cmd+V and restores your prior clipboard; a few secure fields block programmatic paste.
+- Paste uses Cmd+V and the transcript stays on your clipboard, so you can paste it again if the target window did not accept it; a few secure fields block programmatic paste.
 - Paths assume Apple-Silicon Homebrew (`/opt/homebrew`); adjust for Intel (`/usr/local`).
 
 ## License
