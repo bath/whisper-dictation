@@ -90,6 +90,7 @@ if ! grep -q 'require("whisper-dictation")' "$HS_DIR/init.lua"; then
 fi
 echo "  installed + native recorder built → $HS_DIR"
 
+install_server_agent() {
 say "Whisper server LaunchAgent (launchd keeps it alive)"
 SERVER_BIN="$(command -v whisper-server || echo /opt/homebrew/bin/whisper-server)"
 mkdir -p "$AGENT_DIR"
@@ -128,6 +129,7 @@ if [ -n "$ORPHANS" ]; then
 fi
 launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
 echo "  installed + started → $AGENT_PLIST (log: $SERVER_LOG)"
+}
 
 say "Karabiner rule (F5 / dictation key → F18)"
 mkdir -p "$KB_DIR"
@@ -136,8 +138,12 @@ echo "  rule file installed → $KB_DIR"
 echo "  IMPORTANT: Karabiner does not enable imported rules automatically."
 
 say "Restarting Hammerspoon"
+# Restart BEFORE installing the LaunchAgent: an old running config relaunches
+# its own whisper-server when its child dies, and would race the new agent.
 killall Hammerspoon >/dev/null 2>&1 || true
 sleep 1; open -a Hammerspoon
+
+install_server_agent
 open -a Karabiner-Elements >/dev/null 2>&1 || true
 
 echo
